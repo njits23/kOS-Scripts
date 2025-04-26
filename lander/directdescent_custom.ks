@@ -8,21 +8,7 @@
 // Wait for unpack
 wait until Ship:Unpacked.
 
-set Config:IPU to 4000.
-
-if Config:IPU < 2000
-{
-	print "WARNING!!! IPU SET TOO LOW! IMPACT WITH SURFACE LIKELY! WARNING!!!".
-	print "Current IPU config: " + Config:IPU.
-	print "Increase IPU in difficulty settings manually!".
-}
-
 CORE:PART:GETMODULE("kOSProcessor"):DOEVENT("Open Terminal").
-
-//no solid
-local solidStage is lexicon("Count", 0, "Mass", 0, "PreStageMass", 0, "FuelMass", 0, "Thrust", 0, "MassFlow", 0, "DeltaV", 0).
-//STAR37 (doesn't work)
-//local solidStage is lexicon("Count", 1, "Mass", 968, "PreStageMass", 412, "FuelMass", 563, "Thrust", 40000, "MassFlow", 14.0, "DeltaV", 2490).
 
 parameter landStage is max(Stage:Number - 1, 0).
 parameter brakingMargin is 1.5.
@@ -30,11 +16,6 @@ parameter forceCC is false.
 parameter manualTarget is 0.
 
 switch to scriptpath():volume.
-
-if solidStage:Count > 0
-{
-	set landStage to 0.
-}
 
 // Setup functions
 runpath("/flight/enginemgmt", min(Stage:Number, landStage + 1)).
@@ -54,6 +35,8 @@ for eng in DescentEngines
 local shipMass is Ship:Mass.
 local downrangeAdjust is 1.
 local spinBrake is false.
+
+local solidStage is lexicon("Count", 0, "Mass", 0, "PreStageMass", 0, "FuelMass", 0, "Thrust", 0, "MassFlow", 0, "DeltaV", 0).
 
 local function GetBrakingAim
 {
@@ -83,6 +66,8 @@ local function EstimateBrakingPosition
     local curThrust is burnThrust.
     local curFlow is massFlow.
     local dryMass is massFlow * 2.
+	
+	local brakeDist is v(0,0,0).
     
 	until vdot(vCurrent, Up:Vector) > vTarget or mCurrent < dryMass
 	{
@@ -99,7 +84,9 @@ local function EstimateBrakingPosition
 		set pCurrent to pCurrent + vCurrent * tStep.
 
 		set mCurrent to mCurrent - curFlow * throt * tStep.
-        
+		
+		set brakeDist to brakeDist + vCurrent * tStep.
+		
         if canStageSolid and mCurrent <= solidStage:PreStageMass
         {
             set canStageSolid to false.
@@ -109,8 +96,8 @@ local function EstimateBrakingPosition
             set dryMass to mCurrent - solidStage:FuelMass.
         }
 	}
-
-	return pCurrent.
+	
+	return brakeDist. //pCurrent.
 }
 
 local function RC
@@ -120,7 +107,7 @@ local function RC
     local cmdRoll is 0.
     local rollRate is vdot(Facing:Vector, Ship:AngularVel).
  
-    if spinBrake //or solidStage:Count > 1
+    if spinBrake or solidStage:Count > 1
     {
         if abs(SteeringManager:AngleError) < 1
         {
@@ -200,13 +187,13 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
                     set solidStage:FuelMass to solidStage:FuelMass + eng:Mass - Eng:DryMass.
                     set solidStage:Thrust to solidStage:Thrust + eng:PossibleThrust.
                     set solidStage:MassFlow to solidStage:MassFlow + eng:MaxMassFlow.
-                    //set residuals to max(residuals, eng:residuals).
+                    set residuals to max(residuals, eng:residuals).
                 }
             }
 
             if solidStage:Count > 0
             {
-                for shipPart in Ship:Parts
+				for shipPart in Ship:Parts
                 {
                     local decoupleStage is shipPart:DecoupledIn.
 
@@ -258,7 +245,7 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
 			if targetPos:IsType("GeoCoordinates") and Body:Mu / LAS_ShipPos():SqrMagnitude < initGrav * (choose 0.8 if forceCC else 0.25)
 			{
                 print "Waiting for gravity to increase to " + round(initGrav * 0.2, 3) + " m/s for CCM".
-                set kUniverse:Timewarp:Rate to 10.
+                set kUniverse:Timewarp:Rate to 100.
                 wait until Body:Mu / LAS_ShipPos():SqrMagnitude >= initGrav * 0.2.
                 set kUniverse:Timewarp:Rate to 1.
             
@@ -293,7 +280,7 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
 			set kUniverse:Timewarp:Rate to 100.
 			wait until Body:Mu / LAS_ShipPos():SqrMagnitude >= initGrav.
 		}
-		print "Gravity requirements met, disable RCS to re-enter timewarp".
+		print "Gravity requirements met, preparing for alignment".
 		set kUniverse:Timewarp:Rate to 1.
 		
 		local targetSpeed is choose -10 if stage:number > landStage else -50.
@@ -307,37 +294,67 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
 			local lock targetAlt to round(Ship:Velocity:Surface:Mag * brakingMargin).
 
 			local alt is Ship:Altitude.
+			local pFinal is v(0,0,0). //EstimateBrakingPosition(targetSpeed, burnDelay).
+			local distToGo is 0.
+			local lastAlt is Ship:Altitude.
+			local geoPos is v(0,0,0). //Body:GeoPositionOf(pFinal + Body:Position).
+			local lastCalcTime is 100000.
 			until alt < targetAlt - Ship:VerticalSpeed * 0.5
-			{
+			{				
 				local tStart is Time:Seconds.
-				local pFinal is EstimateBrakingPosition(targetSpeed, burnDelay).
-				local geoPos is Body:GeoPositionOf(pFinal + Body:Position).
-                set alt to pFinal:Mag - Body:Radius - geoPos:TerrainHeight.
+				if alt > Ship:VerticalSpeed*(lastCalcTime+1)
+				{
+					//set pFinal to EstimateBrakingPosition(targetSpeed, burnDelay).
+					//set geoPos to Ship:GeoPosition. //Body:GeoPositionOf(pFinal + Body:Position).
+					//set alt to Ship:Altitude - pFinal:Mag - geoPos:TerrainHeight. //set alt to pFinal:Mag - Body:Radius - geoPos:TerrainHeight.
+					//set distToGo to alt.
+					//set lastAlt to Ship:Altitude.
+					//set lastCalcTime to Time:Seconds-tStart.
+					//print "Calculating took " + lastCalcTime + "s".
+					
+					set pFinal to LAS_ShipPos() + EstimateBrakingPosition(targetSpeed, burnDelay).
+					set geoPos to Body:GeoPositionOf(pFinal + Body:Position).
+					set alt to pFinal:Mag - Body:Radius - geoPos:TerrainHeight.
+					set distToGo to alt.
+					set lastAlt to Ship:Altitude.
+					set lastCalcTime to Time:Seconds-tStart.
+					//print "Calculating took " + lastCalcTime + "s".
+				}
+				else
+				{
+					set alt to distToGo - (LastAlt - Ship:Altitude). 
+				}
+				
                 
                 RGUI_SetText(Readouts:height, round(alt * 0.001, 1) + " km", RGUI_ColourNormal).
                 RGUI_SetText(Readouts:acgx, round(targetAlt * 0.001, 1) + " km", RGUI_ColourNormal).
-				RGUI_SetText(Readouts:fr, round(Time:seconds - tStart, 1) + " s", RGUI_ColourNormal).
+				RGUI_SetText(Readouts:dist, round(pFinal:Mag * 0.001, 1) + " km", RGUI_ColourNormal).
                 if targetPos:IsType("GeoCoordinates")
                 {
                     local wpBearing is vang(vxcl(up:vector, TargetPos:Position), vxcl(up:vector, Ship:Velocity:Surface)).
                     RGUI_SetText(Readouts:dist, round(targetPos:Distance * 0.001, 1) + " km", RGUI_ColourNormal).
                     RGUI_SetText(Readouts:bearing, round(wpBearing, 3) + "°", RGUI_ColourNormal).
                 }
-
-                local close is alt < targetAlt - Ship:VerticalSpeed * 8.
+				
+                local close is alt < targetAlt - Ship:VerticalSpeed * 60.
 				if close
                 {
                     if kUniverse:Timewarp:Rate <> 1
                         set kUniverse:Timewarp:Rate to 1.
-					wait until Time:Seconds >= tStart + 0.1.
+					//wait until Time:Seconds >= tStart + 0.05.
                 }
-				else
+				else if alt < targetAlt - Ship:VerticalSpeed * 1000
                 {
                     if not rcs and kUniverse:Timewarp:Rate <> 10
                         set kUniverse:Timewarp:Rate to 10.
-					wait until Time:Seconds >= tStart + 1.
+					//wait until Time:Seconds >= tStart + 0.5.
                 }
-
+				else
+				{
+					if not rcs and kUniverse:Timewarp:Rate <> 100
+                        set kUniverse:Timewarp:Rate to 100.
+					//wait until Time:Seconds >= tStart + 1.
+				}
                 callback(close).
 
 				set lastPrediction to geoPos.
@@ -368,10 +385,11 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
 		lock steering to LookDirUp(GetBrakingAim(), Facing:UpVector).
 
 		set navmode to "surface".
-
+		
         RGUI_SetText(Readouts:status, "Wait Ignition", RGUI_ColourNormal).
+		print "Aligned, calculating suicide burn".
         WaitBurn(EM_IgDelay(), RC@).
-
+		
         print "Beginning braking burn".
         RGUI_SetText(Readouts:status, "Braking", RGUI_ColourNormal).
         RGUI_SetText(Readouts:throt, "100%", RGUI_ColourNormal).
@@ -402,7 +420,7 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
 
         until (Ship:VerticalSpeed >= targetSpeed and Ship:Velocity:Surface:Mag < -targetSpeed) or not EM_CheckThrust(0.1)
         {
-            local t is Ship:Velocity:Surface:Mag * Ship:Mass / burnThrust.
+			local t is Ship:Velocity:Surface:Mag * Ship:Mass / burnThrust.
             if targetPos:IsType("GeoCoordinates")
             {
                 local wpBearing is vang(vxcl(up:vector, TargetPos:Position), vxcl(up:vector, Ship:Velocity:Surface)).
@@ -454,7 +472,7 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
                 set canFireSolid to false.
             }
         }
-
+        
         if stage:number > landStage
         {
             set Ship:Control:PilotMainThrottle to 0.

@@ -11,22 +11,22 @@ local minThrottle is 0.
 local throttleClamp is choose 0.001 if preventShutdown else 0.
 
 local minThrust is 0.
-local maxThrust is 0.
+local max_Thrust is 0.
 
 for eng in DescentEngines
 {
     set minThrust to minThrust + eng:MinThrottle * eng:PossibleThrust.
-    set maxThrust to maxThrust + eng:PossibleThrust.
+    set max_Thrust to max_Thrust + eng:PossibleThrust.
     if eng:ullage or eng:Ignitions >= 0
         set throttleClamp to 0.001.  // Prevent shutdown
 }
 for eng in Ship:RCS
 {
     if eng:ForeByThrottle
-        set maxThrust to maxThrust + eng:AvailableThrust.
+        set max_Thrust to max_Thrust + eng:AvailableThrust.
 }
 
-set minThrottle to minThrust / maxThrust.
+set minThrottle to minThrust / max_Thrust.
 
 local throttleGroups is list().
 local unassignedEngines is DescentEngines:Copy().
@@ -86,7 +86,7 @@ global function LanderEnginesOff
 
 global function LanderMaxThrust
 {
-    return maxThrust.
+    return max_Thrust.
 }
 
 local diffEngines is list().
@@ -110,7 +110,7 @@ global function LanderCalcThrust
 {
     parameter engList.
     
-    local nomThrust is maxThrust * (minThrottle + Ship:Control:PilotMainThrottle * (1 - minThrottle)).
+    local nomThrust is max_Thrust * (minThrottle + Ship:Control:PilotMainThrottle * (1 - minThrottle)).
     local curThrust is 0.
     for e in engList
     {

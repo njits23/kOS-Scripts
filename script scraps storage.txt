@@ -1,0 +1,17 @@
+	if vang(Ship:Facing:ForeVector, Ship:SrfRetrograde:ForeVector) > 50
+	{
+		print "Adjusting orientation drift".
+		set debugStat1:Text to "Status: Adjusting orientation drift".
+		kUniverse:Timewarp:CancelWarp.
+		set Ship:Control:Roll to 0.
+		lock steering to Ship:SrfRetrograde + R(0,0,RollOffset).
+		until vang(Ship:Facing:ForeVector, Ship:SrfRetrograde:ForeVector) < 1 and abs(vdot(Facing:Vector, Ship:AngularVel)) < 0.2 and GetRoll() > 89 and GetRoll() < 91
+		{
+			UpdateGUI().
+			wait 0.
+		}
+		wait 2.
+		unlock steering.
+		set kUniverse:TimeWarp:Warp to 4.
+		set debugStat1:Text to "Status: Waiting until lower than 100km to shift CoM".
+	}

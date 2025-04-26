@@ -19,22 +19,12 @@ if Config:IPU < 2000
 
 CORE:PART:GETMODULE("kOSProcessor"):DOEVENT("Open Terminal").
 
-//no solid
-local solidStage is lexicon("Count", 0, "Mass", 0, "PreStageMass", 0, "FuelMass", 0, "Thrust", 0, "MassFlow", 0, "DeltaV", 0).
-//STAR37 (doesn't work)
-//local solidStage is lexicon("Count", 1, "Mass", 968, "PreStageMass", 412, "FuelMass", 563, "Thrust", 40000, "MassFlow", 14.0, "DeltaV", 2490).
-
 parameter landStage is max(Stage:Number - 1, 0).
 parameter brakingMargin is 1.5.
 parameter forceCC is false.
 parameter manualTarget is 0.
 
 switch to scriptpath():volume.
-
-if solidStage:Count > 0
-{
-	set landStage to 0.
-}
 
 // Setup functions
 runpath("/flight/enginemgmt", min(Stage:Number, landStage + 1)).
@@ -54,6 +44,8 @@ for eng in DescentEngines
 local shipMass is Ship:Mass.
 local downrangeAdjust is 1.
 local spinBrake is false.
+
+local solidStage is lexicon("Count", 0, "Mass", 0, "PreStageMass", 0, "FuelMass", 0, "Thrust", 0, "MassFlow", 0, "DeltaV", 0).
 
 local function GetBrakingAim
 {
@@ -196,11 +188,11 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
             {
                 if (eng:Stage = Stage:Number - 1) and (not eng:AllowShutdown)
                 {
-                    set solidStage:Count to solidStage:Count + 1.
+					set solidStage:Count to solidStage:Count + 1.
                     set solidStage:FuelMass to solidStage:FuelMass + eng:Mass - Eng:DryMass.
-                    set solidStage:Thrust to solidStage:Thrust + eng:PossibleThrust.
-                    set solidStage:MassFlow to solidStage:MassFlow + eng:MaxMassFlow.
-                    //set residuals to max(residuals, eng:residuals).
+                    set solidStage:Thrust to solidStage:Thrust + eng:PossibleThrust*0.87.
+                    set solidStage:MassFlow to solidStage:MassFlow + eng:MaxMassFlow*0.87.
+                    set residuals to max(residuals, eng:getmodule("ModuleEnginesRF"):getfield("predicted residuals")).
                 }
             }
 
@@ -293,7 +285,7 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
 			set kUniverse:Timewarp:Rate to 100.
 			wait until Body:Mu / LAS_ShipPos():SqrMagnitude >= initGrav.
 		}
-		print "Gravity requirements met, disable RCS to re-enter timewarp".
+		print "Gravity requirements met".
 		set kUniverse:Timewarp:Rate to 1.
 		
 		local targetSpeed is choose -10 if stage:number > landStage else -50.
@@ -346,6 +338,7 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
         
 		// 60 second alignment margin
         RGUI_SetText(Readouts:status, "Wait Align", RGUI_ColourNormal).
+		rcs off.
 		WaitBurn(choose 90 if spinBrake else 60, {parameter c.}).
 		set kUniverse:Timewarp:Rate to 1.
 		wait until kUniverse:Timewarp:Rate = 1.
@@ -375,9 +368,23 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
         print "Beginning braking burn".
         RGUI_SetText(Readouts:status, "Braking", RGUI_ColourNormal).
         RGUI_SetText(Readouts:throt, "100%", RGUI_ColourNormal).
-        
-        until DescentEngines[0]:Ignitions = 0 or EM_CheckThrust(0.1)
-            EM_Ignition(0.1).
+		
+		local canFireSolid is solidStage:Count > 0.
+		
+		if canFireSolid //and ((Velocity:Surface:Mag < solidStage:DeltaV - targetSpeed) or not EM_CheckThrust(0.1))
+        {
+            print "Firing solid stage".
+            EM_Cutoff().
+            Stage.
+            wait until stage:ready.
+            EM_ResetEngines(Stage:Number).
+            set canFireSolid to false.
+        }
+		else
+		{        
+			until DescentEngines[0]:Ignitions = 0 or EM_CheckThrust(0.1)
+				EM_Ignition(0.1).
+		}
 
         if solidStage:Count <= 1
             set ship:control:roll to 0.
@@ -396,9 +403,7 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
         {
             local drPred is vdot(targetPos:Position - lastPrediction:Position, vxcl(Up:Vector, Ship:Velocity:Surface):Normalized).
             set downrangeAdjust to 1 + max(-0.02, min((drPred - 2500) / 20000, 0.02)).
-        }
-        
-        local canFireSolid is solidStage:Count > 0.
+        }       
 
         until (Ship:VerticalSpeed >= targetSpeed and Ship:Velocity:Surface:Mag < -targetSpeed) or not EM_CheckThrust(0.1)
         {
@@ -443,16 +448,6 @@ if Ship:Status = "Flying" or Ship:Status = "Sub_Orbital" or Ship:Status = "Escap
                 break.
             
             wait 0.
-
-            if canFireSolid and ((Velocity:Surface:Mag < solidStage:DeltaV - targetSpeed) or not EM_CheckThrust(0.1))
-            {
-                print "Firing solid stage".
-                EM_Cutoff().
-                Stage.
-                wait until stage:ready.
-                EM_ResetEngines(Stage:Number).
-                set canFireSolid to false.
-            }
         }
 
         if stage:number > landStage
